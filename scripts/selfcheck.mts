@@ -96,3 +96,38 @@ await ok('未知动作明确报错', async () => {
 })
 
 console.log('--- calls:', calls.length)
+
+/* === P8/P9：出站 reply 的 base64 messageId、file:// 本地文件 === */
+import { promises as fsx } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { KarinConvertAdapter, localizeUri } from '../src/event/convert'
+
+await ok('出站 reply 段把 base64 messageId 解成 message_seq（不再是 NaN）', async () => {
+  const id = encodeMsgId('group', 853065300, 4242)
+  const segs = await KarinConvertAdapter([{ type: 'reply', messageId: id }, { type: 'text', text: 'hi' }] as any)
+  assert.deepEqual(segs[0], { type: 'reply', data: { message_seq: 4242 } })
+})
+
+await ok('出站 reply 段裸数字按 seq 处理', async () => {
+  const segs = await KarinConvertAdapter([{ type: 'reply', messageId: '999' }] as any)
+  assert.deepEqual(segs[0], { type: 'reply', data: { message_seq: 999 } })
+})
+
+await ok('file:// 本地文件转成 base64://（容器内可读路径）', async () => {
+  const p = path.join(os.tmpdir(), 'milky-probe.txt')
+  await fsx.writeFile(p, 'hello-milky')
+  const uri = await localizeUri(`file://${p}`)
+  assert.ok(uri.startsWith('base64://'), uri.slice(0, 30))
+  assert.equal(Buffer.from(uri.slice(9), 'base64').toString(), 'hello-milky')
+})
+
+await ok('file:// 读不到的文件原样保留（不猜路径）', async () => {
+  const uri = await localizeUri('file:///app/definitely-not-here.png')
+  assert.equal(uri, 'file:///app/definitely-not-here.png')
+})
+
+await ok('data: URL 仍然转 base64://', async () => {
+  const uri = await localizeUri('data:image/png;base64,AAAA')
+  assert.equal(uri, 'base64://AAAA')
+})

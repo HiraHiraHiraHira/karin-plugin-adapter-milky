@@ -44,6 +44,15 @@ function seqForReply (id: string | number): number {
   return resolveMessageId(raw).seq
 }
 
+/**
+ * 出站 reply 段用：Karin 的 reply 元素带的是适配器 encodeMsgId 出来的 base64 三元组，
+ * 直接 `+messageId` 会变 NaN（JSON 里成 null，协议端接受但引用静默消失）。
+ * 这里解出 seq；解不出来就明确报错，别发一条没有引用的消息。
+ */
+export function seqFromMessageId (id: string | number): number {
+  return seqForReply(id)
+}
+
 /** 解析 messageId。Milky 没有全局 message_id，裸数字直接拒绝（不猜场景） */
 function resolveMessageId (id: string | number): { scene: MessageScene; peerId: number; seq: number } {
   const raw = String(id)

@@ -1,12 +1,47 @@
 import { IncomingMessage, OutgoingSegment } from '@saltify/milky-types'
+import { promises as fs } from 'node:fs'
 import { contactFriend, contactGroup, contactGroupTemp, Elements, segment, SendElement } from 'node-karin'
 import { segment as Segment } from '@/event/segment'
 import { MilkyAdapter } from '@/core/milkyAdapter'
-import { MilkyCompatError, normalizeUri } from '@/core/onebotCompat'
+import { MilkyCompatError, normalizeUri, seqFromMessageId } from '@/core/onebotCompat'
 
 /** 入站转发展开上限：条数与单条文本长度 */
 const FORWARD_MAX_NODES = 10
 const FORWARD_MAX_TEXT = 500
+
+/**
+ * 出站 file:// 本地文件的兜底读取上限。
+ * Yogurt 跑在宿主机、Karin 在容器里，/app/... 这种容器内路径协议端读不到
+ * （实测 -500 File not found），所以能在本地读到的就直接转 base64 发过去。
+ * 超过上限的不硬转，保留原样让协议端报明确错误，免得把几百 MB 塞进 JSON。
+ */
+const FILE_URI_MAX_BYTES = 32 * 1024 * 1024
+
+/**
+ * 把容器内 file:// 路径转成 base64://。
+ * 读不到或超限就原样返回（让协议端报错，别静默改成别的东西）。
+ */
+export async function localizeUri (uri: string, bot?: MilkyAdapter): Promise<string> {
+  const raw = String(uri ?? '')
+  if (!raw.startsWith('file://')) return normalizeUri(raw)
+  let path = raw.slice('file://'.length)
+  try { path = decodeURIComponent(path) } catch { /* 保留原样 */ }
+  // file:///app/x → /app/x；file://app/x 这种非标准写法补一个斜杠
+  if (!path.startsWith('/')) path = '/' + path
+  try {
+    const stat = await fs.stat(path)
+    if (!stat.isFile()) return raw
+    if (stat.size > FILE_URI_MAX_BYTES) {
+      bot?.logger('warn', `[milky] 本地文件 ${path} 有 ${(stat.size / 1024 / 1024).toFixed(1)}MB，超过 base64 兜底上限，按原样发给协议端`)
+      return raw
+    }
+    const buf = await fs.readFile(path)
+    return `base64://${buf.toString('base64')}`
+  } catch {
+    // 文件不在这个容器里（比如插件给的宿主机路径），原样交给协议端
+    return raw
+  }
+}
 
 /** milky 消息转 Karin */
 export async function AdapterConvertKarin (
@@ -119,7 +154,7 @@ export async function AdapterConvertKarin (
 }
 
 /** Karin 消息转 milky */
-export async function KarinConvertAdapter (data: Array<SendElement>): Promise<Array<OutgoingSegment>> {
+export async function KarinConvertAdapter (data: Array<SendElement>, bot?: MilkyAdapter): Promise<Array<OutgoingSegment>> {
   const elements: Array<OutgoingSegment> = []
   for (const i of data) {
     switch (i.type) {
@@ -133,16 +168,17 @@ export async function KarinConvertAdapter (data: Array<SendElement>): Promise<Ar
         elements.push(Segment.face(i.id, i.isBig))
         break
       case 'reply':
-        elements.push(Segment.reply(i.messageId))
+        // messageId 是适配器 encodeMsgId 的 base64 三元组，必须解成 seq 再发
+        elements.push(Segment.reply(seqFromMessageId(i.messageId)))
         break
       case 'image':
-        elements.push(Segment.image(normalizeUri(i.file), { summary: i.summary, subType: i.subType as any }))
+        elements.push(Segment.image(await localizeUri(i.file, bot), { summary: i.summary, subType: i.subType as any }))
         break
       case 'record':
-        elements.push(Segment.record(normalizeUri(i.file)))
+        elements.push(Segment.record(await localizeUri(i.file, bot)))
         break
       case 'video':
-        elements.push(Segment.video(normalizeUri(i.file)))
+        elements.push(Segment.video(await localizeUri(i.file, bot)))
         break
       case 'json':
         // Karin 的 json 段 → Milky 的 light_app，ark 卡片唯一的出站通道

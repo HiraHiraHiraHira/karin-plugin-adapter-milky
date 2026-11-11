@@ -1,7 +1,7 @@
 import { BotCfg } from '@/config/types'
 import karin, { AdapterBase, AdapterType, Contact, contactFriend, contactGroup, contactGroupTemp, ForwardOptions, GetGroupHighlightsResponse, GroupInfo, GroupMemberInfo, logger, MessageResponse, NodeElement, registerBot, SendElement, SendMsgResults, unregisterBot, UserInfo } from 'node-karin'
 import { Client } from '@/core/client'
-import { AdapterConvertKarin, KarinConvertAdapter } from '@/event/convert'
+import { AdapterConvertKarin, KarinConvertAdapter, localizeUri } from '@/event/convert'
 import { dir } from '@/utils'
 import { WebSocketClient } from '@/transport/websocket'
 import { SSEClient } from '@/transport/sse'
@@ -170,7 +170,7 @@ export class MilkyAdapter extends AdapterBase implements AdapterType {
       message_id: '',
       messageTime: 0,
     }
-    const msg = await KarinConvertAdapter(elements)
+    const msg = await KarinConvertAdapter(elements, this)
     let res
     if (contact.scene === 'group') {
       res = await this.super.sendGroupMessage(+contact.peer, msg)
@@ -195,7 +195,7 @@ export class MilkyAdapter extends AdapterBase implements AdapterType {
       const userid = v.subType === 'fake' ? +v.userId : userId
       const nickname = v.subType === 'fake' ? v.nickname : NickName
       const content = v.subType === 'fake' ? v.message : (await this.getForwardMsg(v.messageId))[0].elements
-      const message = await KarinConvertAdapter(content)
+      const message = await KarinConvertAdapter(content, this)
       messages.push(segment.fake(userid, message, nickname))
     }
     const data = segment.node(messages)
@@ -356,6 +356,36 @@ export class MilkyAdapter extends AdapterBase implements AdapterType {
       return res.download_url
     }
     throw new MilkyCompatError('Milky 暂不支持获取私聊/临时会话文件下载链接（协议端需要 file_hash）')
+  }
+
+  /**
+   * 上传文件。Karin 的插件用 `bot.uploadFile(contact, 本地路径, 名字)`，
+   * Milky 这边 group 走 upload_group_file、friend 走 upload_private_file。
+   * 本地路径同样有「协议端在宿主机、读不到容器路径」的问题，所以先转 base64。
+   */
+  async uploadFile (_contact: Contact, _file: string, _name: string, _folder?: string): Promise<void> {
+    const uri = await localizeUri(_file.startsWith('file://') ? _file : `file://${_file}`, this)
+    if (_contact.scene === 'group') {
+      await this.super.uploadGroupFile(+_contact.peer, _folder || '/', uri, _name)
+      return
+    }
+    if (_contact.scene === 'friend') {
+      await this.super.uploadPrivateFile(+_contact.peer, uri, _name)
+      return
+    }
+    throw new MilkyCompatError('Milky 不支持向临时会话上传文件')
+  }
+
+  /**
+   * 群禁言列表。Milky 没有单独的接口，用群成员列表里 shut_up_end_time 过期的项合成。
+   * muteTime 按 Unix 秒返回（与 Milky 字段一致）。
+   */
+  async getGroupMuteList (_groupId: string): Promise<Array<{ userId: string, muteTime: number }>> {
+    const res = (await this.super.getGroupMemberList(+_groupId, true)).members
+    const now = Math.floor(Date.now() / 1000)
+    return res
+      .filter((m: any) => m.shut_up_end_time && m.shut_up_end_time > now)
+      .map((m: any) => ({ userId: m.user_id + '', muteTime: m.shut_up_end_time }))
   }
 
   async setMsgReaction (contact: Contact, messageId: string, faceId: number | string, isSet: boolean): Promise<void> {
