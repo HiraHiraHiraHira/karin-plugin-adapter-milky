@@ -10,16 +10,53 @@ const FORWARD_MAX_NODES = 10
 const FORWARD_MAX_TEXT = 500
 
 /**
- * 出站 file:// 本地文件的兜底读取上限。
- * Yogurt 跑在宿主机、Karin 在容器里，/app/... 这种容器内路径协议端读不到
- * （实测 -500 File not found），所以能在本地读到的就直接转 base64 发过去。
- * 超过上限的不硬转，保留原样让协议端报明确错误，免得把几百 MB 塞进 JSON。
+ * 出站 file:// 本地文件的处理（两条路，优先第一条）：
+ *
+ * 1. **路径改写**：Yogurt 跑在宿主机、Karin 在容器里。容器里的 /app 就是宿主的
+ *    /root/karin（docker bind mount）。直接从 /proc/self/mountinfo 读出这层映射，
+ *    把 file:///app/... 改写成 file:///root/karin/...，协议端就能自己读文件。
+ *    这条路不限大小，100MB 的视频也不用塞进 JSON。
+ * 2. **base64 兜底**：路径不在任何 bind mount 下，或改写后的宿主机路径不可用时，
+ *    本地能读到的就转 base64（上限 64MB）；超限就原样发出去让协议端报明确错误。
  */
-const FILE_URI_MAX_BYTES = 32 * 1024 * 1024
+const FILE_URI_MAX_BYTES = 64 * 1024 * 1024
+
+/** /proc/self/mountinfo 里 hostPath -> containerPath 的 bind mount 映射（只取 host 侧是绝对路径的） */
+let mountMap: Array<{ host: string, container: string }> | null = null
+
+function readMountMap (): Array<{ host: string, container: string }> {
+  if (mountMap) return mountMap
+  mountMap = []
+  try {
+    const info = require('node:fs').readFileSync('/proc/self/mountinfo', 'utf8') as string
+    for (const line of info.split('\n')) {
+      // 820 756 253:3 /root/karin /app rw,relatime - ext4 /dev/vda3 rw
+      const parts = line.split(' ')
+      if (parts.length < 5) continue
+      const host = parts[3]
+      const container = parts[4]
+      if (!host.startsWith('/') || host === '/' || !container.startsWith('/')) continue
+      mountMap.push({ host, container })
+    }
+  } catch { /* 非容器环境：没有映射，全走 base64 */ }
+  // 长前缀优先，避免 /app 和 /app/sub 两层挂载时匹配错
+  mountMap.sort((a, b) => b.container.length - a.container.length)
+  return mountMap
+}
+
+/** 容器路径 → 宿主机路径；找不到映射返回 null */
+export function toHostPath (path: string): string | null {
+  for (const m of readMountMap()) {
+    if (path === m.container || path.startsWith(m.container.endsWith('/') ? m.container : m.container + '/')) {
+      return m.host + path.slice(m.container.length)
+    }
+  }
+  return null
+}
 
 /**
- * 把容器内 file:// 路径转成 base64://。
- * 读不到或超限就原样返回（让协议端报错，别静默改成别的东西）。
+ * 把容器内的 file:// 转成协议端能读的 URI。
+ * 优先改写成宿主机路径；不行再 base64；都不行原样返回。
  */
 export async function localizeUri (uri: string, bot?: MilkyAdapter): Promise<string> {
   const raw = String(uri ?? '')
@@ -28,17 +65,30 @@ export async function localizeUri (uri: string, bot?: MilkyAdapter): Promise<str
   try { path = decodeURIComponent(path) } catch { /* 保留原样 */ }
   // file:///app/x → /app/x；file://app/x 这种非标准写法补一个斜杠
   if (!path.startsWith('/')) path = '/' + path
+
+  let size = -1
   try {
     const stat = await fs.stat(path)
     if (!stat.isFile()) return raw
-    if (stat.size > FILE_URI_MAX_BYTES) {
-      bot?.logger('warn', `[milky] 本地文件 ${path} 有 ${(stat.size / 1024 / 1024).toFixed(1)}MB，超过 base64 兜底上限，按原样发给协议端`)
-      return raw
-    }
+    size = stat.size
+  } catch {
+    // 文件不在这个容器里，可能本来就是宿主机路径，直接交给协议端
+    return raw
+  }
+
+  // 1. 改写宿主机路径（优先，不限大小）
+  const hostPath = toHostPath(path)
+  if (hostPath) return `file://${hostPath}`
+
+  // 2. base64 兜底
+  if (size > FILE_URI_MAX_BYTES) {
+    bot?.logger('warn', `[milky] 本地文件 ${path} 有 ${(size / 1024 / 1024).toFixed(1)}MB，超过 base64 兜底上限 ${FILE_URI_MAX_BYTES / 1024 / 1024}MB，按原样发给协议端`)
+    return raw
+  }
+  try {
     const buf = await fs.readFile(path)
     return `base64://${buf.toString('base64')}`
   } catch {
-    // 文件不在这个容器里（比如插件给的宿主机路径），原样交给协议端
     return raw
   }
 }

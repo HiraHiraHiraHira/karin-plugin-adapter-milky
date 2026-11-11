@@ -131,3 +131,24 @@ await ok('data: URL 仍然转 base64://', async () => {
   const uri = await localizeUri('data:image/png;base64,AAAA')
   assert.equal(uri, 'base64://AAAA')
 })
+
+await ok('toHostPath 把 /app 映射到宿主机（容器内）', async () => {
+  const { toHostPath } = await import('../src/event/convert')
+  const hp = toHostPath('/app/@karinjs/temp/x.jpg')
+  if (hp === null) {
+    console.log('  (非容器环境，跳过)')
+  } else {
+    assert.ok(hp.endsWith('/@karinjs/temp/x.jpg'), hp)
+    assert.ok(!hp.startsWith('/app'), hp)
+  }
+})
+
+await ok('localizeUri 对 /app 下的文件返回宿主机 file:// 而不是 base64', async () => {
+  const { localizeUri, toHostPath } = await import('../src/event/convert')
+  const p = '/app/@karinjs/temp/milky-selfcheck-probe.txt'
+  await fsx.mkdir('/app/@karinjs/temp', { recursive: true }).catch(() => {})
+  await fsx.writeFile(p, 'probe').catch(() => {})
+  const uri = await localizeUri(`file://${p}`)
+  if (toHostPath(p)) assert.ok(uri.startsWith('file:///') && !uri.includes('/app/'), uri)
+  else assert.ok(uri.startsWith('base64://'), uri)
+})
