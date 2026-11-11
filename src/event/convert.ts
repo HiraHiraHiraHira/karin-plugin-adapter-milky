@@ -2,9 +2,18 @@ import { IncomingMessage, OutgoingSegment } from '@saltify/milky-types'
 import { contactFriend, contactGroup, contactGroupTemp, Elements, segment, SendElement } from 'node-karin'
 import { segment as Segment } from '@/event/segment'
 import { MilkyAdapter } from '@/core/milkyAdapter'
+import { MilkyCompatError, normalizeUri } from '@/core/onebotCompat'
+
+/** 入站转发展开上限：条数与单条文本长度 */
+const FORWARD_MAX_NODES = 10
+const FORWARD_MAX_TEXT = 500
 
 /** milky 消息转 Karin */
-export async function AdapterConvertKarin (event: IncomingMessage, bot: MilkyAdapter): Promise<Array<Elements>> {
+export async function AdapterConvertKarin (
+  event: IncomingMessage,
+  bot: MilkyAdapter,
+  depth = 0
+): Promise<Array<Elements>> {
   const data = event.segments
   const elements = []
   for (const i of data) {
@@ -40,11 +49,54 @@ export async function AdapterConvertKarin (event: IncomingMessage, bot: MilkyAda
         break
       }
       case 'forward': {
+        /**
+         * 入站合并转发：展开成「文本 + 图片」。
+         * Karin 的段模型没有 forward 元素，保留 forward_id 现有插件都不会去取，
+         * 所以这里直接压平——上限 10 条 / 每条 500 字，避免长转发刷屏。
+         * 同样有问题的是嵌套转发：depth >= 1 时只留占位，避免递归。
+         */
         const parts: string[] = []
         if ('title' in i.data && i.data.title) parts.push(String(i.data.title))
         if ('summary' in i.data && i.data.summary) parts.push(String(i.data.summary))
-        parts.push(`forward_id=${i.data.forward_id}`)
-        elements.push(segment.text(`[合并转发 ${parts.join(' / ')}]`))
+        if (depth >= 1) {
+          parts.push(`forward_id=${i.data.forward_id}`)
+          elements.push(segment.text(`[合并转发 ${parts.join(' / ')}]`))
+          break
+        }
+        try {
+          const nodes = await bot.getForwardMsg(i.data.forward_id, depth + 1)
+          if (!nodes.length) throw new Error('转发内容为空')
+          let n = 0
+          for (const node of nodes) {
+            if (n >= FORWARD_MAX_NODES) {
+              elements.push(segment.text('…'))
+              break
+            }
+            for (const el of node.elements || []) {
+              const any = el as any
+              if (el.type === 'text') {
+                elements.push(segment.text(String(any.text ?? any.data?.text ?? '').slice(0, FORWARD_MAX_TEXT)))
+              } else if (el.type === 'at') {
+                elements.push(segment.text('@' + (any.name || any.targetId || any.data?.name || any.data?.qq || '')))
+              } else if (el.type === 'image') {
+                const uri = any.file || any.url || any.data?.file || any.data?.url
+                if (uri) elements.push(segment.image(uri))
+                else elements.push(segment.text('[图片]'))
+              } else if (el.type === 'face') {
+                elements.push(segment.text('[表情]'))
+              } else {
+                elements.push(segment.text(`[${el.type}]`))
+              }
+            }
+            elements.push(segment.text('\n'))
+            n += 1
+          }
+        } catch (err: any) {
+          // 展开失败不是致命错误：保留占位，让消息其余部分继续流动
+          bot.logger('warn', `合并转发展开失败 forward_id=${i.data.forward_id}: ${err?.message ?? err}`)
+          parts.push(`forward_id=${i.data.forward_id}`)
+          elements.push(segment.text(`[合并转发 ${parts.join(' / ')}]`))
+        }
         break
       }
       case 'market_face':
@@ -64,15 +116,6 @@ export async function AdapterConvertKarin (event: IncomingMessage, bot: MilkyAda
     }
   }
   return elements
-}
-
-/**
- * data: URL 统一转 `base64://` scheme。
- * milky 的 uri 仅支持 file:// http(s):// base64:// 三种格式
- */
-const normalizeUri = (uri: string): string => {
-  const match = /^data:[^;,]*;base64,(.+)$/s.exec(uri)
-  return match ? `base64://${match[1]}` : uri
 }
 
 /** Karin 消息转 milky */
@@ -101,8 +144,27 @@ export async function KarinConvertAdapter (data: Array<SendElement>): Promise<Ar
       case 'video':
         elements.push(Segment.video(normalizeUri(i.file)))
         break
+      case 'json':
+        // Karin 的 json 段 → Milky 的 light_app，ark 卡片唯一的出站通道
+        elements.push({ type: 'light_app', data: { json_payload: String(i.data ?? '') } })
+        break
+      case 'file':
+      case 'markdown':
+      case 'xml':
+      case 'music':
+      case 'share':
+      case 'location':
+        // 这些段在 Milky 出站侧没有对应类型。以前走 default 变成 JSON 文本还返回成功，
+        // 插件会误判「发出去了」——这里明确失败，让插件能按能力降级。
+        throw new MilkyCompatError(
+          `出站 ${i.type} 段在 Milky 下没有对应实现；请改用 text / image / light_app(ark) 等支持的段`,
+          `sendMsg(${i.type})`
+        )
       default:
-        elements.push(Segment.text(JSON.stringify(i)))
+        throw new MilkyCompatError(
+          `出站段 "${(i as any).type}" 在 Milky 下没有对应实现`,
+          `sendMsg(${(i as any).type})`
+        )
     }
   }
   return elements

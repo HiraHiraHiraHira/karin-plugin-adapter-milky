@@ -10,6 +10,7 @@ import { webhookRegistry } from '@/transport/webhook'
 import { Cfg } from '@/config'
 import { InvitationCache } from '@/core/invitationCache'
 import { findGroupNotification } from '@/core/notificationLookup'
+import { invokeOneBotAction, MilkyCompatError } from '@/core/onebotCompat'
 
 /** 统一的 transport 接口：webhook / sse / websocket 三种连接形态共用 */
 interface Transport {
@@ -152,8 +153,13 @@ export class MilkyAdapter extends AdapterBase implements AdapterType {
     logger.bot(level, this.account.selfId, ...args)
   }
 
+  /**
+   * Karin 的 sendApi 语义是 OneBot v11 动作，不是 Milky 的 API 路径。
+   * 直接 POST /api/<action> 对 OneBot 动作名一律 404，所以这里走 lite 兼容层：
+   * 语义完全一致的动作做映射，其余显式报错（绝不静默失败）。
+   */
   async sendApi (action: string, params: any) {
-    return this.super.request(action, params)
+    return invokeOneBotAction(this, action, params)
   }
 
   async sendMsg (contact: Contact, elements: Array<SendElement>, _retryCount?: number): Promise<SendMsgResults> {
@@ -293,7 +299,7 @@ export class MilkyAdapter extends AdapterBase implements AdapterType {
     return elements
   }
 
-  async getForwardMsg (_resId: string): Promise<Array<MessageResponse>> {
+  async getForwardMsg (_resId: string, depth = 0): Promise<Array<MessageResponse>> {
     const info = await this.super.getForwardedMessage(_resId)
     const result: MessageResponse[] = []
     for (const v of info.messages) {
@@ -334,10 +340,22 @@ export class MilkyAdapter extends AdapterBase implements AdapterType {
           name: v.sender_name,
           role: 'member'
         },
-        elements: await AdapterConvertKarin(synthetic as any, this)
+        elements: await AdapterConvertKarin(synthetic as any, this, depth)
       })
     }
     return result
+  }
+
+  /**
+   * 取文件下载链接：群文件走 get_group_file_download_url。
+   * 私聊文件协议端要 file_hash，而入站段不一定带——拿不到就明确报错，不自己拼 URL。
+   */
+  async getFileUrl (_contact: Contact, _fileId: string): Promise<string> {
+    if (_contact.scene === 'group') {
+      const res = await this.super.getGroupFileDownloadUrl(+_contact.peer, _fileId)
+      return res.download_url
+    }
+    throw new MilkyCompatError('Milky 暂不支持获取私聊/临时会话文件下载链接（协议端需要 file_hash）')
   }
 
   async setMsgReaction (contact: Contact, messageId: string, faceId: number | string, isSet: boolean): Promise<void> {
