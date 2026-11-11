@@ -248,6 +248,14 @@ export async function invokeOneBotAction (bot: MilkyAdapter, action: string, par
       await bot.super.setGroupName(Number(p.group_id), String(p.group_name ?? ''))
       return {}
     }
+    case 'set_group_portrait':
+    case 'set_group_avatar': {
+      // ling 的「改群头像」走 set_group_portrait；Milky 对应 set_group_avatar
+      const uri = p.file ?? p.url ?? p.portrait
+      if (!uri) throw new MilkyCompatError('set_group_portrait 缺少 file/url 参数', act)
+      await bot.super.setGroupAvatar(Number(p.group_id), normalizeUri(String(uri)))
+      return {}
+    }
     case 'send_like': {
       await bot.super.sendProfileLike(Number(p.user_id), Number(p.times ?? 1))
       return {}
