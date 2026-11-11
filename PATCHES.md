@@ -111,11 +111,36 @@ Milky 这个事件不带被加精消息的发送者，`senderId` 留空——插
 `get_private_file_download_url` 的 `is_self_send`、`OutgoingForwardedMessage.time`、
 接收的 `markdown` 段）在适配器里目前都没用到，需要时再补。
 
+## P8 出站 reply 段解 base64 messageId
+
+**问题**：Karin 的 reply 元素带的是适配器 `encodeMsgId` 出来的 base64 三元组，
+`segment.reply()` 内部 `+messageId` → `NaN` → JSON 里成 `null`。
+协议端接受 null 且 retcode 0，结果是**引用静默消失**，不报错（审计实测）。
+
+**改法**（`src/core/onebotCompat.ts` + `src/event/convert.ts`）：导出 `seqFromMessageId()`，
+先试 base64 三元组解码，再回退裸数字，解不出来明确报错。
+
+## P9 file:// 本地文件转 base64
+
+**问题**：Yogurt 跑在宿主机、Karin 在容器里，插件给的是容器内路径 `/app/...`，
+协议端读不到（实测 `-500 File not found`）。NapCat 容器恰好挂了 temp 目录，所以 OneBot 号上看不出来。
+
+**改法**（`src/event/convert.ts` 的 `localizeUri`）：`file://` 路径在本容器内能读到就直接转
+`base64://`，上限 32MB；读不到或超限原样保留（让协议端报明确错误，不猜路径）。
+图片、语音、视频、`uploadFile` 都走这条。
+
+## P10 补 uploadFile / getGroupMuteList
+
+- `uploadFile(contact, 路径, 名字, 目录)`：群走 `upload_group_file`，好友走 `upload_private_file`，
+  本地路径同样先转 base64。
+- `getGroupMuteList(groupId)`：Milky 没有单独接口，用群成员列表里 `shut_up_end_time` 未过期的项合成，
+  `muteTime` 返回 Unix 秒。
+
 ## 自检
 
 ```bash
 pnpm install --ignore-scripts
-npx tsx scripts/selfcheck.mts         # 段转换 / 动作映射 / 明确报错路径
+npx tsx scripts/selfcheck.mts         # 段转换 / 动作映射 / reply 解 id / file:// 兜底
 npx tsx scripts/selfcheck-events.mts  # 事件转换（精华通知、group_disband）
 pnpm build
 ```
