@@ -1,11 +1,28 @@
 import { MilkyAdapter } from '@/core/milkyAdapter'
 import { Event } from '@saltify/milky-types'
 import { createMessage } from './message'
-import { BotOffline, FriendFileUpload, FriendPoke, GroupAdminChange, GroupEssenceMessageChange, GroupFileUpload, GroupMemberDecrease, GroupMemberIncrease, GroupMessageReaction, GroupMute, GroupNameChange, GroupPoke, GroupWholeMute, PeerPinChange, RecallNotice } from './notice'
+import { BotOffline, FriendFileUpload, FriendPoke, GroupAdminChange, GroupDisband, GroupEssenceMessageChange, GroupFileUpload, GroupMemberDecrease, GroupMemberIncrease, GroupMessageReaction, GroupMute, GroupNameChange, GroupPoke, GroupWholeMute, PeerPinChange, RecallNotice } from './notice'
 import { FriendRequest, GroupInvite, GroupJoinRequest } from './request'
+
+/**
+ * Milky 1.3 新增的事件在 @saltify/milky-types@1.2.2 里没有定义
+ * （1.3 起官方不再发布类型包，见 milky.ntqqrev.org/changelog）。
+ * 这里手写最小结构，等上游补类型后可以删掉。
+ */
+interface GroupDisbandEvent {
+  event_type: 'group_disband'
+  time: number
+  self_id: number
+  data: {
+    group_id: number
+    operator_id: number
+  }
+}
 
 type HandlerMap = {
   [K in Event['event_type']]: (event: Extract<Event, { event_type: K }>, bot: MilkyAdapter) => Promise<void> | void
+} & {
+  group_disband: (event: GroupDisbandEvent, bot: MilkyAdapter) => Promise<void> | void
 }
 const Handlers: HandlerMap = Object.create(null)
 Handlers['message_receive'] = createMessage
@@ -28,6 +45,7 @@ Handlers['bot_offline'] = BotOffline
 Handlers['peer_pin_change'] = PeerPinChange
 Handlers['group_essence_message_change'] = GroupEssenceMessageChange
 Handlers['group_name_change'] = GroupNameChange
+Handlers['group_disband'] = GroupDisband
 
 export async function EventDispatch (i: Event, bot: MilkyAdapter) {
   const handler = Handlers[i.event_type]

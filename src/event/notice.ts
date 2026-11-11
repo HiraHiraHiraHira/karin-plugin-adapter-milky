@@ -1,6 +1,6 @@
 import { MilkyAdapter } from '@/core/milkyAdapter'
 import { Event } from '@saltify/milky-types'
-import { contactFriend, contactGroup, createGroupAdminChangedNotice, createGroupFileUploadedNotice, createGroupMemberAddNotice, createGroupMemberBanNotice, createGroupMemberDelNotice, createGroupMessageReactionNotice, createGroupPokeNotice, createGroupRecallNotice, createGroupWholeBanNotice, createPrivateFileUploadedNotice, createPrivatePokeNotice, createPrivateRecallNotice, senderFriend, senderGroup } from 'node-karin'
+import { contactFriend, contactGroup, createGroupAdminChangedNotice, createGroupFileUploadedNotice, createGroupHlightsChangedNotice, createGroupMemberAddNotice, createGroupMemberBanNotice, createGroupMemberDelNotice, createGroupMessageReactionNotice, createGroupPokeNotice, createGroupRecallNotice, createGroupWholeBanNotice, createPrivateFileUploadedNotice, createPrivatePokeNotice, createPrivateRecallNotice, senderFriend, senderGroup } from 'node-karin'
 
 export function RecallNotice (event: Extract<Event, { event_type: 'message_recall' }>, bot: MilkyAdapter) {
   const data = event.data
@@ -229,11 +229,36 @@ export function PeerPinChange (event: Extract<Event, { event_type: 'peer_pin_cha
 }
 
 export function GroupEssenceMessageChange (event: Extract<Event, { event_type: 'group_essence_message_change' }>, bot: MilkyAdapter) {
-  bot.logger('debug', `[群精华消息变更] group=${event.data.group_id} seq=${event.data.message_seq} operator=${event.data.operator_id} isSet=${event.data.is_set}`)
+  const contact = contactGroup(event.data.group_id + '')
+  const operatorId = event.data.operator_id + ''
+  createGroupHlightsChangedNotice({
+    bot,
+    eventId: `notice:${event.time}`,
+    rawEvent: event,
+    time: event.time,
+    contact,
+    sender: senderGroup(operatorId),
+    srcReply: (elements) => bot.sendMsg(contact, elements),
+    content: {
+      operatorId,
+      // Milky 的精华事件只带 message_seq，不带发送者；拿 0 占位，插件如果需要可以自己 get_msg
+      senderId: '',
+      messageId: bot.super.encodeMsgId('group', event.data.group_id, event.data.message_seq),
+      isSet: event.data.is_set
+    }
+  })
 }
 
 export function GroupNameChange (event: Extract<Event, { event_type: 'group_name_change' }>, bot: MilkyAdapter) {
   bot.logger('info', `[群名变更] group=${event.data.group_id} newName=${event.data.new_group_name} operator=${event.data.operator_id}`)
+}
+
+/**
+ * 群解散（Milky 1.3）。Karin 没有对应的通知类型，只记日志并让 bot 侧知道这个群没了。
+ * 事件结构手写在 event/index.ts，因为 1.2.2 的类型包里没有它。
+ */
+export function GroupDisband (event: { time: number, data: { group_id: number, operator_id: number } }, bot: MilkyAdapter) {
+  bot.logger('warn', `[群解散] group=${event.data.group_id} operator=${event.data.operator_id}`)
 }
 
 export function GroupFileUpload (event: Extract<Event, { event_type: 'group_file_upload' }>, bot: MilkyAdapter) {

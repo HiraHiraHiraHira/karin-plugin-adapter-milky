@@ -89,13 +89,40 @@ default 分支被转成一段 JSON 文本，**而且 API 返回成功**——插
 **改法**（`src/core/milkyAdapter.ts`）：实现 `getFileUrl`，群文件走 `get_group_file_download_url`；
 私聊文件因为协议端要 `file_hash` 而段里不一定带，明确报错而不是拼错链接。
 
+## P6 群精华变更通知（Milky 1.2 字段，之前只打日志）
+
+**问题**：`group_essence_message_change` 上游只 `bot.logger('debug', ...)`，
+Karin 的 `notice.groupHighlightsChange` 事件不会触发，插件感知不到精华变更。
+
+**改法**（`src/event/notice.ts`）：构造 `createGroupHlightsChangedNotice`，
+`messageId` 用 `encodeMsgId('group', group_id, message_seq)` 拼。
+Milky 这个事件不带被加精消息的发送者，`senderId` 留空——插件要的话自己 `get_msg`。
+
+## P7 群解散事件（Milky 1.3）
+
+**问题**：`group_disband` 是 1.3 新增的事件，1.2.2 的类型包没有它，
+上游 `Handlers` 表里也没有，收到会落到「未知事件」分支。
+
+**改法**（`src/event/index.ts` + `src/event/notice.ts`）：手写最小事件结构挂进 `Handlers`，
+收到只打 `warn` 日志。Karin 没有「群解散」通知类型，因此不做事件转发。
+
+**顺带说明**：1.3 起官方**移除了 `@saltify/milky-types` 包**，之后的协议字段只能自己写类型
+（官网建议拷 Zod 定义或 `milkygen` 生成）。1.3 的其它新增（`persist_group_file`、
+`get_private_file_download_url` 的 `is_self_send`、`OutgoingForwardedMessage.time`、
+接收的 `markdown` 段）在适配器里目前都没用到，需要时再补。
+
 ## 自检
 
 ```bash
 pnpm install --ignore-scripts
-npx tsx scripts/selfcheck.mts   # 覆盖段转换、动作映射、明确报错路径
+npx tsx scripts/selfcheck.mts         # 段转换 / 动作映射 / 明确报错路径
+npx tsx scripts/selfcheck-events.mts  # 事件转换（精华通知、group_disband）
 pnpm build
 ```
+
+`selfcheck-events.mts` 的一个注意点：node-karin 的通知构造函数会读 Karin 自己的配置缓存，
+单进程裸跑会抛 `Cannot read properties of undefined (reading 'Bot:<selfId>:<groupId>')`。
+这个错误说明代码**已经进到**通知构造函数里了，脚本就是断言这一点；不要误以为失败。
 
 ## 升级上游
 
