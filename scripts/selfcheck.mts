@@ -152,3 +152,24 @@ await ok('localizeUri 对 /app 下的文件返回宿主机 file:// 而不是 bas
   if (toHostPath(p)) assert.ok(uri.startsWith('file:///') && !uri.includes('/app/'), uri)
   else assert.ok(uri.startsWith('base64://'), uri)
 })
+
+await ok('setMsgReaction 按 id 长度区分 face/emoji，并兼容直接传字符', async () => {
+  const { MilkyAdapter } = await import('../src/core/milkyAdapter')
+  const sent: any[] = []
+  const self: any = {
+    super: {
+      decodeMsgId: () => ({ scene: 'group', peer: '853065300', seq: 42 }),
+      setGroupMessageReaction: async (...a: any[]) => { sent.push(a) }
+    }
+  }
+  const call = (faceId: number | string) => {
+    sent.length = 0
+    return (MilkyAdapter.prototype as any).setMsgReaction.call(self, { scene: 'group', peer: '853065300' }, 'x', faceId, true)
+      .then(() => ({ reaction: sent[0][2], reactionType: sent[0][3] }))
+  }
+  assert.deepEqual(await call(128064), { reaction: '128064', reactionType: 'emoji' }, '👀 码点是 emoji')
+  assert.deepEqual(await call(366), { reaction: '366', reactionType: 'face' }, '3 位小黄脸是 face')
+  assert.deepEqual(await call(1000), { reaction: '1000', reactionType: 'emoji' }, '4 位边界走 emoji')
+  assert.deepEqual(await call('👀'), { reaction: '128064', reactionType: 'emoji' }, '直接传字符转码点')
+  await assert.rejects(() => call(''), /不能为空/)
+})

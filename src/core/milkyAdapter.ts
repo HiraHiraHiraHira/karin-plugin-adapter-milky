@@ -391,8 +391,21 @@ export class MilkyAdapter extends AdapterBase implements AdapterType {
   async setMsgReaction (contact: Contact, messageId: string, faceId: number | string, isSet: boolean): Promise<void> {
     if (contact.scene !== 'group') throw new Error('仅支持群聊设置表情回应')
     const seq = this.super.decodeMsgId(messageId).seq
-    const reaction = String(faceId)
-    const reactionType: 'face' | 'emoji' = /^\d+$/.test(reaction) ? 'face' : 'emoji'
+    const raw = String(faceId).trim()
+    // 纯数字时按长度区分：<=3 位是 QQ 小黄脸 id（face），更长的（如 128064 = 👀）是
+    // Unicode 码点，必须走 emoji，否则服务端不校验、静默返回成功但客户端渲染不出来。
+    // 非纯数字时兼容直接传 emoji 字符的调用方，转成码点再按 emoji 发，
+    // 否则 emoji + 原字符会吃 retcode 51 invalid ReqBody.EmojiId。
+    let reaction = raw
+    let reactionType: 'face' | 'emoji'
+    if (/^\d+$/.test(raw)) {
+      reactionType = raw.length <= 3 ? 'face' : 'emoji'
+    } else {
+      const codePoint = raw.codePointAt(0)
+      if (codePoint === undefined) throw new Error('表情回应 id 不能为空')
+      reaction = String(codePoint)
+      reactionType = 'emoji'
+    }
     await this.super.setGroupMessageReaction(+contact.peer, seq, reaction, reactionType, isSet)
   }
 

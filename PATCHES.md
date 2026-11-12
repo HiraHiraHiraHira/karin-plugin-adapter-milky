@@ -136,6 +136,26 @@ Milky 这个事件不带被加精消息的发送者，`senderId` 留空——插
 - `getGroupMuteList(groupId)`：Milky 没有单独接口，用群成员列表里 `shut_up_end_time` 未过期的项合成，
   `muteTime` 返回 Unix 秒。
 
+## P11 reaction_type 按 id 长度区分 face/emoji
+
+**问题**：`setMsgReaction` 把类型判断写成了「纯数字就是 face」，任何数字 id 都发
+`reaction_type="face"`（QQ 小黄脸）。但 `128064`（👀）这类是 **Unicode 码点**，必须发 `emoji`。
+NapCat / Lagrange.Core 的判据是长度：`emojiId.length <= 3` → `face`(type 1)，否则 → `emoji`(type 2)。
+
+Yogurt 收到 `face` + `128064` 不会报错 —— 它原样透传给腾讯 OIDB 9082，服务端不校验 face id
+是否存在、直接返回成功。所以接口全绿、`group_message_reaction` 事件也照常回推，**只有客户端渲染不出来**。
+这也是这个 bug 能在 Milky 下潜伏而 OneBot（NapCat 会按长度自己纠正）下正常的原因。
+
+**改法**（`src/core/milkyAdapter.ts` 的 `setMsgReaction`）：
+
+- 纯数字：`length <= 3` → `face`，否则 → `emoji`
+- 非纯数字（调用方直接传字符，如 `"👀"`）：`String(raw.codePointAt(0))` 转码点后按 `emoji` 发。
+  不转的话 `emoji` + 原字符会吃 `retcode 51 invalid ReqBody.EmojiId`
+- 空串明确抛错，不静默发空 reaction
+
+**验证**：`scripts/selfcheck.mts` 有对应用例；线上用抓包看 Yogurt 回推的
+`group_message_reaction` 事件里 `reaction_type` 是否与发出时一致（Yogurt 会忠实回显）。
+
 ## 自检
 
 ```bash
