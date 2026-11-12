@@ -173,3 +173,8 @@ await ok('setMsgReaction 按 id 长度区分 face/emoji，并兼容直接传字�
   assert.deepEqual(await call('👀'), { reaction: '128064', reactionType: 'emoji' }, '直接传字符转码点')
   await assert.rejects(() => call(''), /不能为空/)
 })
+
+// node-karin 被 import 后会留下定时器/句柄，进程不会自然退出。
+// 显式退出，退出码交给上面 ok() 累积的 process.exitCode。
+console.log(process.exitCode === 1 ? '有失败用例' : '全部通过')
+process.exit(process.exitCode ?? 0)
